@@ -1,4 +1,5 @@
 from ctfcli.core.config import Config
+from ctfcli.core.exceptions import ProjectNotInitialized
 from ctfcli.utils.tools import safe_format
 
 
@@ -13,3 +14,31 @@ class Media:
         for m in section:
             content = safe_format(content, items={m: config["media"][m]})
         return content
+
+    @staticmethod
+    def render(text):
+        # Substitute [media] placeholders from .ctf/config; no-op if text isn't a
+        # string or the project config can't be located (e.g. outside a project).
+        if not isinstance(text, str):
+            return text
+
+        try:
+            return Media.replace_placeholders(text)
+        except ProjectNotInitialized:
+            return text
+
+    @staticmethod
+    def render_hints(hints: list) -> list:
+        # Return a copy of the hints list with [media] placeholders rendered in
+        # each hint's content, preserving the str-vs-dict structure used by
+        # challenge.yml / the normalized challenge.
+        rendered = []
+        for hint in hints:
+            if isinstance(hint, str):
+                rendered.append(Media.render(hint))
+            elif isinstance(hint, dict) and "content" in hint:
+                rendered.append({**hint, "content": Media.render(hint["content"])})
+            else:
+                rendered.append(hint)
+
+        return rendered

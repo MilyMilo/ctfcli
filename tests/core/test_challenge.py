@@ -14,6 +14,7 @@ from ctfcli.core.exceptions import (
     RemoteChallengeNotFound,
 )
 from ctfcli.core.image import Image
+from ctfcli.core.properties import PropertyContext, get_property
 
 BASE_DIR = Path(__file__).parent.parent
 
@@ -58,7 +59,7 @@ class TestLocalChallengeLoading(unittest.TestCase):
 
         self.assertEqual(challenge["name"], "Test Challenge")
 
-    @mock.patch("ctfcli.core.challenge.subprocess.call")
+    @mock.patch("ctfcli.core.properties.image.subprocess.call")
     def test_raises_if_image_defined_but_not_resolved(self, mock_call: MagicMock):
         mock_call.return_value = 1
         challenge_path = BASE_DIR / "fixtures" / "challenges" / "test-challenge-minimal" / "challenge.yml"
@@ -107,7 +108,7 @@ class TestLocalChallengeLoading(unittest.TestCase):
         self.assertEqual(challenge.image.basename, "test-challenge")
         self.assertTrue(challenge.image.built)
 
-    @mock.patch("ctfcli.core.challenge.subprocess.call")
+    @mock.patch("ctfcli.core.properties.image.subprocess.call")
     def test_recognizes_local_prebuilt_images(self, mock_call: MagicMock):
         mock_call.return_value = 0
         challenge_path = BASE_DIR / "fixtures" / "challenges" / "test-challenge-minimal" / "challenge.yml"
@@ -141,7 +142,7 @@ class TestChallengeSolutions(unittest.TestCase):
 
     def test_resolves_solution_from_specified_path(self):
         challenge = Challenge(self.minimal_challenge, {"solution": "challenge.yml"})
-        solution_path, solution_state = challenge._resolve_solution_path()
+        solution_path, solution_state = get_property("solution").resolve_path(PropertyContext(challenge))
         self.assertEqual(solution_path, challenge.challenge_directory / "challenge.yml")
         self.assertEqual(solution_state, "hidden")
 
@@ -155,7 +156,7 @@ class TestChallengeSolutions(unittest.TestCase):
                 }
             },
         )
-        solution_path, solution_state = challenge._resolve_solution_path()
+        solution_path, solution_state = get_property("solution").resolve_path(PropertyContext(challenge))
         self.assertEqual(solution_path, challenge.challenge_directory / "challenge.yml")
         self.assertEqual(solution_state, "solved")
 
@@ -169,18 +170,18 @@ class TestChallengeSolutions(unittest.TestCase):
                 }
             },
         )
-        solution_path, solution_state = challenge._resolve_solution_path()
+        solution_path, solution_state = get_property("solution").resolve_path(PropertyContext(challenge))
         self.assertEqual(solution_path, challenge.challenge_directory / "challenge.yml")
         self.assertEqual(solution_state, "visible")
 
     def test_does_not_resolve_solution_if_not_specified(self):
         challenge = Challenge(self.minimal_challenge)
-        self.assertIsNone(challenge._resolve_solution_path())
+        self.assertIsNone(get_property("solution").resolve_path(PropertyContext(challenge)))
 
-    @mock.patch("ctfcli.core.challenge.click.secho")
+    @mock.patch("ctfcli.core.properties.solution.click.secho")
     def test_does_not_resolve_solution_if_missing(self, mock_secho: MagicMock):
         challenge = Challenge(self.minimal_challenge, {"solution": "writeup/WRITEUP.md"})
-        self.assertIsNone(challenge._resolve_solution_path())
+        self.assertIsNone(get_property("solution").resolve_path(PropertyContext(challenge)))
         mock_secho.assert_called_once_with(
             f"Solution file 'writeup/WRITEUP.md' specified, but not found at "
             f"{challenge.challenge_directory / 'writeup/WRITEUP.md'}",
@@ -214,7 +215,7 @@ class TestChallengeSolutions(unittest.TestCase):
         mock_api.get.side_effect = mock_get
         mock_api.post.side_effect = mock_post
 
-        challenge._create_solution()
+        get_property("solution").upsert(PropertyContext(challenge))
 
         mock_api.post.assert_has_calls(
             [call("/api/v1/solutions", json={"challenge_id": 1, "state": "hidden", "content": ""})]
@@ -248,7 +249,7 @@ class TestChallengeSolutions(unittest.TestCase):
         mock_api.get.side_effect = mock_get
         mock_api.post.side_effect = mock_post
 
-        challenge._create_solution()
+        get_property("solution").upsert(PropertyContext(challenge))
 
         mock_api.post.assert_has_calls(
             [call("/api/v1/solutions", json={"challenge_id": 1, "state": "visible", "content": ""})]
@@ -292,7 +293,7 @@ class TestChallengeSolutions(unittest.TestCase):
         mock_api: MagicMock = mock_api_constructor.return_value
         mock_api.get.side_effect = mock_get
 
-        challenge._create_solution()
+        get_property("solution").upsert(PropertyContext(challenge))
 
         mock_api.post.assert_not_called()
         # Previously uploaded solution files should be deleted before re-uploading
@@ -327,7 +328,9 @@ class TestChallengeSolutions(unittest.TestCase):
         mock_api: MagicMock = mock_api_constructor.return_value
         mock_api.get.side_effect = mock_get
 
-        challenge._delete_solution_files("![a](/files/loc-a/a.png) and ![c](/files/loc-c/c.png)")
+        get_property("solution").delete_solution_files(
+            PropertyContext(challenge), "![a](/files/loc-a/a.png) and ![c](/files/loc-c/c.png)"
+        )
 
         # Only files referenced in the content should be deleted, not the unreferenced one
         mock_api.delete.assert_has_calls(
@@ -354,7 +357,9 @@ class TestChallengeSolutions(unittest.TestCase):
         mock_api: MagicMock = mock_api_constructor.return_value
         mock_api.get.side_effect = mock_get
 
-        challenge._delete_solution_files("![a](/files/loc-dup/dup.png) and again ![a](/files/loc-dup/dup.png)")
+        get_property("solution").delete_solution_files(
+            PropertyContext(challenge), "![a](/files/loc-dup/dup.png) and again ![a](/files/loc-dup/dup.png)"
+        )
 
         # A file referenced twice must only be deleted once - a second DELETE would 404
         mock_api.delete.assert_called_once_with("/api/v1/files/7")
@@ -393,7 +398,7 @@ class TestChallengeSolutions(unittest.TestCase):
         mock_api.get.side_effect = mock_get
         mock_api.post.side_effect = mock_post
 
-        challenge._create_solution()
+        get_property("solution").upsert(PropertyContext(challenge))
 
         # The image is referenced twice but must only be uploaded once - content.replace
         # rewrites every occurrence, so a second upload would be orphaned immediately
@@ -411,7 +416,7 @@ class TestChallengeSolutions(unittest.TestCase):
         challenge.challenge_id = 1
 
         mock_api: MagicMock = mock_api_constructor.return_value
-        challenge._delete_solution_files("no files referenced here")
+        get_property("solution").delete_solution_files(PropertyContext(challenge), "no files referenced here")
 
         mock_api.get.assert_not_called()
         mock_api.delete.assert_not_called()
@@ -422,7 +427,7 @@ class TestChallengeSolutions(unittest.TestCase):
         challenge.challenge_id = 1
 
         mock_api: MagicMock = mock_api_constructor.return_value
-        challenge._create_solution()
+        get_property("solution").upsert(PropertyContext(challenge))
 
         mock_api.post.assert_not_called()
         mock_api.patch.assert_not_called()
@@ -462,7 +467,7 @@ class TestChallengeSolutions(unittest.TestCase):
         mock_api.get.side_effect = mock_get
         mock_api.post.side_effect = mock_post
 
-        challenge._create_solution()
+        get_property("solution").upsert(PropertyContext(challenge))
 
         mock_api.post.assert_has_calls(
             [
@@ -1019,8 +1024,8 @@ class TestSyncChallenge(unittest.TestCase):
         }
         mock_api.post.return_value.json.return_value = {"success": True, "data": {"id": 10}}
 
-        challenge._delete_existing_hints()
-        challenge._create_hints()
+        get_property("hints").delete_existing(PropertyContext(challenge))
+        get_property("hints").create_items(PropertyContext(challenge))
 
         self.assertEqual(
             mock_api.delete.call_args_list,
@@ -1246,7 +1251,7 @@ class TestSyncChallenge(unittest.TestCase):
         mock_api.post.assert_not_called()
 
     @mock.patch("ctfcli.core.challenge.Challenge.load_installed_challenges", return_value=installed_challenges)
-    @mock.patch("ctfcli.core.challenge.click.secho")
+    @mock.patch("ctfcli.core.properties.references.click.secho")
     @mock.patch("ctfcli.core.challenge.API")
     def test_creates_module_if_missing(self, mock_api_constructor: MagicMock, *args, **kwargs):
         challenge = Challenge(self.minimal_challenge, {"module": "New Module"})
@@ -1365,7 +1370,7 @@ class TestSyncChallenge(unittest.TestCase):
             self.assertNotIn("module_id", patch_call.kwargs.get("json", {}))
 
     @mock.patch("ctfcli.core.challenge.Challenge.load_installed_challenges", return_value=installed_challenges)
-    @mock.patch("ctfcli.core.challenge.click.secho")
+    @mock.patch("ctfcli.core.properties.references.click.secho")
     @mock.patch("ctfcli.core.challenge.API")
     def test_challenge_cannot_require_itself(
         self, mock_api_constructor: MagicMock, mock_secho: MagicMock, *args, **kwargs
@@ -1936,7 +1941,7 @@ class TestCreateChallenge(unittest.TestCase):
         )
 
     @mock.patch("ctfcli.core.challenge.Challenge.load_installed_challenges", return_value=installed_challenges)
-    @mock.patch("ctfcli.core.challenge.click.secho")
+    @mock.patch("ctfcli.core.properties.references.click.secho")
     @mock.patch("ctfcli.core.challenge.API")
     def test_creates_challenge_with_module(self, mock_api_constructor: MagicMock, *args, **kwargs):
         challenge = Challenge(self.minimal_challenge, {"module": "New Module"})
@@ -2148,7 +2153,7 @@ class TestLintChallenge(unittest.TestCase):
         }
         self.assertDictEqual(expected_lint_issues, e.exception.issues)
 
-    @mock.patch("ctfcli.core.challenge.click.secho")
+    @mock.patch("ctfcli.core.lint.click.secho")
     def test_validates_dockerfile_exposes_port(self, mock_secho: MagicMock):
         challenge = Challenge(self.invalid_dockerfile_challenge)
 
@@ -2165,7 +2170,7 @@ class TestLintChallenge(unittest.TestCase):
         mock_secho.assert_called_once_with("Skipping Hadolint", fg="yellow")
         self.assertDictEqual(expected_lint_issues, e.exception.issues)
 
-    @mock.patch("ctfcli.core.challenge.subprocess.run")
+    @mock.patch("ctfcli.core.lint.subprocess.run")
     def test_runs_hadolint(self, mock_run: MagicMock):
         class RunResult:
             def __init__(self, return_code):
@@ -2190,8 +2195,8 @@ class TestLintChallenge(unittest.TestCase):
         }
         self.assertDictEqual(expected_lint_issues, e.exception.issues)
 
-    @mock.patch("ctfcli.core.challenge.subprocess.run")
-    @mock.patch("ctfcli.core.challenge.click.secho")
+    @mock.patch("ctfcli.core.lint.subprocess.run")
+    @mock.patch("ctfcli.core.lint.click.secho")
     def test_allows_for_skipping_hadolint(self, mock_secho: MagicMock, mock_run: MagicMock, *args, **kwargs):
         challenge = Challenge(self.dockerfile_challenge)
         result = challenge.lint(skip_hadolint=True)
@@ -2572,13 +2577,15 @@ class TestVerifyMirrorChallenge(unittest.TestCase):
         challenge.challenge_id = 3
 
         # modules are compared by name
-        self.assertTrue(challenge._compare_challenge_module("Test Module", "Test Module"))
-        self.assertTrue(challenge._compare_challenge_module(None, None))
-        self.assertFalse(challenge._compare_challenge_module("Other Module", "Test Module"))
+        prop = get_property("module")
+        ctx = PropertyContext(challenge)
+        self.assertTrue(prop.matches(ctx, "Test Module", "Test Module"))
+        self.assertTrue(prop.matches(ctx, None, None))
+        self.assertFalse(prop.matches(ctx, "Other Module", "Test Module"))
 
         # a numeric name (loaded from YAML as an int) is coerced to a string
-        self.assertTrue(challenge._compare_challenge_module(42, "42"))
-        self.assertFalse(challenge._compare_challenge_module(42, "Test Module"))
+        self.assertTrue(prop.matches(ctx, 42, "42"))
+        self.assertFalse(prop.matches(ctx, 42, "Test Module"))
 
     @mock.patch("ctfcli.core.challenge.API")
     def test_verify_checks_if_challenge_is_the_same(self, mock_api_constructor: MagicMock):
@@ -2752,7 +2759,7 @@ class TestMediaPlaceholders(unittest.TestCase):
             post_responses.append(response)
         mock_api.post.side_effect = post_responses
 
-        challenge._create_hints()
+        get_property("hints").create_items(PropertyContext(challenge))
 
         # plain-string hint content is substituted
         mock_api.post.assert_any_call(
@@ -2860,90 +2867,93 @@ class TestSaveChallenge(unittest.TestCase):
 class TestChallengeScheduledAt(unittest.TestCase):
     minimal_challenge = BASE_DIR / "fixtures" / "challenges" / "test-challenge-minimal" / "challenge.yml"
 
+    def _prop(self):
+        return get_property("scheduled_at")
+
+    def _payload(self, challenge, ignore=()):
+        return self._prop().create_payload(PropertyContext(challenge, ignore=ignore))
+
     def test_parse_accepts_timezone_aware_string(self):
-        challenge = Challenge(self.minimal_challenge, {"scheduled_at": "2026-06-15T12:00:00+00:00"})
-        parsed = challenge._parse_scheduled_at(challenge["scheduled_at"])
+        parsed = self._prop().parse("2026-06-15T12:00:00+00:00")
         self.assertEqual(parsed, datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
 
     def test_parse_accepts_z_suffix(self):
-        challenge = Challenge(self.minimal_challenge, {"scheduled_at": "2026-06-15T12:00:00Z"})
-        parsed = challenge._parse_scheduled_at(challenge["scheduled_at"])
+        parsed = self._prop().parse("2026-06-15T12:00:00Z")
         self.assertEqual(parsed.astimezone(timezone.utc), datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
 
     def test_parse_accepts_timezone_aware_datetime(self):
         # PyYAML parses an unquoted ISO timestamp into a datetime object
-        challenge = Challenge(
-            self.minimal_challenge,
-            {"scheduled_at": datetime(2026, 6, 15, 14, 0, 0, tzinfo=timezone.utc)},
-        )
-        parsed = challenge._parse_scheduled_at(challenge["scheduled_at"])
+        parsed = self._prop().parse(datetime(2026, 6, 15, 14, 0, 0, tzinfo=timezone.utc))
         self.assertEqual(parsed, datetime(2026, 6, 15, 14, 0, 0, tzinfo=timezone.utc))
 
     def test_parse_returns_none_for_none_or_empty(self):
-        challenge = Challenge(self.minimal_challenge)
-        self.assertIsNone(challenge._parse_scheduled_at(None))
-        self.assertIsNone(challenge._parse_scheduled_at(""))
+        self.assertIsNone(self._prop().parse(None))
+        self.assertIsNone(self._prop().parse(""))
 
     def test_parse_rejects_naive_string(self):
-        challenge = Challenge(self.minimal_challenge, {"scheduled_at": "2026-06-15T12:00:00"})
         with self.assertRaises(InvalidChallengeFile) as ctx:
-            challenge._parse_scheduled_at(challenge["scheduled_at"])
+            self._prop().parse("2026-06-15T12:00:00")
         self.assertIn("timezone", str(ctx.exception))
 
     def test_parse_rejects_naive_datetime(self):
-        challenge = Challenge(self.minimal_challenge, {"scheduled_at": datetime(2026, 6, 15, 12, 0, 0)})  # noqa: DTZ001
         with self.assertRaises(InvalidChallengeFile):
-            challenge._parse_scheduled_at(challenge["scheduled_at"])
+            self._prop().parse(datetime(2026, 6, 15, 12, 0, 0))  # noqa: DTZ001
 
     def test_parse_rejects_invalid_string(self):
-        challenge = Challenge(self.minimal_challenge, {"scheduled_at": "not-a-date"})
         with self.assertRaises(InvalidChallengeFile):
-            challenge._parse_scheduled_at(challenge["scheduled_at"])
+            self._prop().parse("not-a-date")
 
     def test_payload_includes_scheduled_at_iso(self):
         challenge = Challenge(self.minimal_challenge, {"scheduled_at": "2026-06-15T14:00:00+02:00"})
-        payload = challenge._get_initial_challenge_payload()
         # The explicit offset is preserved when sent to CTFd (CTFd normalizes server-side)
-        self.assertEqual(payload["scheduled_at"], "2026-06-15T14:00:00+02:00")
+        self.assertEqual(self._payload(challenge)["scheduled_at"], "2026-06-15T14:00:00+02:00")
 
     def test_payload_scheduled_at_none_when_absent(self):
         challenge = Challenge(self.minimal_challenge)
-        payload = challenge._get_initial_challenge_payload()
-        self.assertIsNone(payload["scheduled_at"])
+        self.assertIsNone(self._payload(challenge)["scheduled_at"])
 
     def test_payload_omits_scheduled_at_when_ignored(self):
         challenge = Challenge(self.minimal_challenge, {"scheduled_at": "2026-06-15T12:00:00+00:00"})
-        payload = challenge._get_initial_challenge_payload(ignore=("scheduled_at",))
-        self.assertNotIn("scheduled_at", payload)
+        self.assertNotIn("scheduled_at", self._payload(challenge, ignore=("scheduled_at",)))
 
     def test_payload_raises_on_naive_scheduled_at(self):
         challenge = Challenge(self.minimal_challenge, {"scheduled_at": "2026-06-15T12:00:00"})
         with self.assertRaises(InvalidChallengeFile):
-            challenge._get_initial_challenge_payload()
+            self._payload(challenge)
 
     def test_normalize_makes_utc_explicit(self):
         # CTFd returns naive UTC; ctfcli should write it back with an explicit offset
-        self.assertEqual(
-            Challenge._normalize_scheduled_at("2026-06-15T12:00:00"),
-            "2026-06-15T12:00:00+00:00",
-        )
+        self.assertEqual(self._prop().normalize("2026-06-15T12:00:00"), "2026-06-15T12:00:00+00:00")
 
     def test_normalize_returns_none_for_none(self):
-        self.assertIsNone(Challenge._normalize_scheduled_at(None))
+        self.assertIsNone(self._prop().normalize(None))
 
-    def test_compare_equal_for_same_instant_different_offsets(self):
+    def test_pull_normalizes_remote_value(self):
         challenge = Challenge(self.minimal_challenge)
+        ctx = PropertyContext(challenge)
+        self.assertEqual(
+            self._prop().pull(ctx, {"scheduled_at": "2026-06-15T12:00:00"}),
+            "2026-06-15T12:00:00+00:00",
+        )
+        self.assertIsNone(self._prop().pull(ctx, {}))
+
+    def test_is_default_only_for_none(self):
+        self.assertTrue(self._prop().is_default(None))
+        self.assertFalse(self._prop().is_default("2026-06-15T12:00:00+00:00"))
+
+    def test_matches_equal_for_same_instant_different_offsets(self):
+        ctx = PropertyContext(Challenge(self.minimal_challenge))
         # 14:00+02:00 == 12:00+00:00 (same instant)
-        self.assertTrue(challenge._compare_scheduled_at("2026-06-15T14:00:00+02:00", "2026-06-15T12:00:00+00:00"))
+        self.assertTrue(self._prop().matches(ctx, "2026-06-15T14:00:00+02:00", "2026-06-15T12:00:00+00:00"))
 
-    def test_compare_not_equal_for_different_instants(self):
-        challenge = Challenge(self.minimal_challenge)
-        self.assertFalse(challenge._compare_scheduled_at("2026-06-15T13:00:00+00:00", "2026-06-15T12:00:00+00:00"))
+    def test_matches_not_equal_for_different_instants(self):
+        ctx = PropertyContext(Challenge(self.minimal_challenge))
+        self.assertFalse(self._prop().matches(ctx, "2026-06-15T13:00:00+00:00", "2026-06-15T12:00:00+00:00"))
 
-    def test_compare_handles_none(self):
-        challenge = Challenge(self.minimal_challenge)
-        self.assertTrue(challenge._compare_scheduled_at(None, None))
-        self.assertFalse(challenge._compare_scheduled_at("2026-06-15T12:00:00+00:00", None))
+    def test_matches_handles_none(self):
+        ctx = PropertyContext(Challenge(self.minimal_challenge))
+        self.assertTrue(self._prop().matches(ctx, None, None))
+        self.assertFalse(self._prop().matches(ctx, "2026-06-15T12:00:00+00:00", None))
 
     def test_lint_flags_naive_scheduled_at(self):
         challenge = Challenge(self.minimal_challenge, {"scheduled_at": "2026-06-15T12:00:00"})
