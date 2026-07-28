@@ -1,5 +1,6 @@
 import click
 
+from ctfcli.core.media import Media
 from ctfcli.core.properties.base import Property, PropertyContext
 
 
@@ -135,6 +136,9 @@ class TagsProperty(CollectionProperty):
 
 
 class HintsProperty(CollectionProperty):
+    """Hints, whose content may reference media files already uploaded to the
+    instance through {media/...} placeholders defined in the project config."""
+
     key = "hints"
     newline_before = True
     op_order = 50
@@ -158,7 +162,7 @@ class HintsProperty(CollectionProperty):
         for idx, hint in enumerate(ctx.challenge["hints"]):
             if type(hint) == str:
                 hint_payload = {
-                    "content": hint,
+                    "content": Media.render(hint),
                     "title": "",
                     "cost": 0,
                     "challenge_id": ctx.challenge_id,
@@ -167,7 +171,7 @@ class HintsProperty(CollectionProperty):
             else:
                 has_requirements = bool(hint.get("requirements"))
                 hint_payload = {
-                    "content": "" if has_requirements else hint["content"],
+                    "content": "" if has_requirements else Media.render(hint["content"]),
                     "title": hint.get("title", ""),
                     "cost": hint.get("cost", 0),
                     "challenge_id": ctx.challenge_id,
@@ -215,7 +219,7 @@ class HintsProperty(CollectionProperty):
             # Now safe to set the real content
             r = ctx.api.patch(
                 f"/api/v1/hints/{hint_id}",
-                json={"content": hint["content"]},
+                json={"content": Media.render(hint["content"])},
             )
             r.raise_for_status()
 
@@ -257,3 +261,8 @@ class HintsProperty(CollectionProperty):
                 normalized_hints.append(hint_dict)
 
         return normalized_hints
+
+    # Render the local placeholders before comparing, so a challenge pushed with
+    # placeholders still verifies against the substituted values on the remote
+    def matches(self, ctx: PropertyContext, local, remote) -> bool:
+        return local == remote or Media.render_hints(local) == remote

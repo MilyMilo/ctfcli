@@ -328,7 +328,9 @@ class TestChallengeSolutions(unittest.TestCase):
         mock_api: MagicMock = mock_api_constructor.return_value
         mock_api.get.side_effect = mock_get
 
-        challenge._delete_solution_files("![a](/files/loc-a/a.png) and ![c](/files/loc-c/c.png)")
+        get_property("solution").delete_solution_files(
+            PropertyContext(challenge), "![a](/files/loc-a/a.png) and ![c](/files/loc-c/c.png)"
+        )
 
         # Only files referenced in the content should be deleted, not the unreferenced one
         mock_api.delete.assert_has_calls(
@@ -355,7 +357,9 @@ class TestChallengeSolutions(unittest.TestCase):
         mock_api: MagicMock = mock_api_constructor.return_value
         mock_api.get.side_effect = mock_get
 
-        challenge._delete_solution_files("![a](/files/loc-dup/dup.png) and again ![a](/files/loc-dup/dup.png)")
+        get_property("solution").delete_solution_files(
+            PropertyContext(challenge), "![a](/files/loc-dup/dup.png) and again ![a](/files/loc-dup/dup.png)"
+        )
 
         # A file referenced twice must only be deleted once - a second DELETE would 404
         mock_api.delete.assert_called_once_with("/api/v1/files/7")
@@ -394,7 +398,7 @@ class TestChallengeSolutions(unittest.TestCase):
         mock_api.get.side_effect = mock_get
         mock_api.post.side_effect = mock_post
 
-        challenge._create_solution()
+        get_property("solution").upsert(PropertyContext(challenge))
 
         # The image is referenced twice but must only be uploaded once - content.replace
         # rewrites every occurrence, so a second upload would be orphaned immediately
@@ -412,7 +416,7 @@ class TestChallengeSolutions(unittest.TestCase):
         challenge.challenge_id = 1
 
         mock_api: MagicMock = mock_api_constructor.return_value
-        challenge._delete_solution_files("no files referenced here")
+        get_property("solution").delete_solution_files(PropertyContext(challenge), "no files referenced here")
 
         mock_api.get.assert_not_called()
         mock_api.delete.assert_not_called()
@@ -2755,7 +2759,7 @@ class TestMediaPlaceholders(unittest.TestCase):
             post_responses.append(response)
         mock_api.post.side_effect = post_responses
 
-        challenge._create_hints()
+        get_property("hints").create_items(PropertyContext(challenge))
 
         # plain-string hint content is substituted
         mock_api.post.assert_any_call(

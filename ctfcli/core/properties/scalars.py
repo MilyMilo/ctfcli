@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ctfcli.core.exceptions import InvalidChallengeFile
+from ctfcli.core.media import Media
 from ctfcli.core.properties.base import NOT_PULLED, Property, PropertyContext
 
 
@@ -40,25 +41,42 @@ class TextProperty(CopiedProperty):
     def __init__(self, key: str):
         self.key = key
 
+    # the local challenge.yml value sent to the remote; subclasses may transform it
+    def payload_value(self, ctx: PropertyContext):
+        return ctx.challenge.get(self.key, "")
+
     def create_payload(self, ctx: PropertyContext) -> dict:
         if self.ignored(ctx):
             return {self.key: ""}
 
-        return {self.key: ctx.challenge.get(self.key, "")}
+        return {self.key: self.payload_value(ctx)}
 
     def sync_payload(self, ctx: PropertyContext) -> dict:
         if self.ignored(ctx):
             return {self.key: ctx.remote_challenge[self.key]}
 
-        return {self.key: ctx.challenge.get(self.key, "")}
+        return {self.key: self.payload_value(ctx)}
 
 
 class DescriptionProperty(TextProperty):
+    """The challenge description, which may reference media files already uploaded
+    to the instance through {media/...} placeholders defined in the project config."""
+
     def __init__(self):
         super().__init__("description")
 
+    # CTFd stores the substituted description, so placeholders are rendered
+    # before it is sent to the remote
+    def payload_value(self, ctx: PropertyContext) -> str:
+        return Media.render(ctx.challenge.get("description", "") or "")
+
     def pull(self, ctx: PropertyContext, remote_data: dict):
         return remote_data["description"].strip().replace("\r\n", "\n").replace("\t", "")
+
+    # Render the local placeholders before comparing, so a challenge pushed with
+    # placeholders still verifies against the substituted values on the remote
+    def matches(self, ctx: PropertyContext, local, remote) -> bool:
+        return local == remote or Media.render(local) == remote
 
 
 class AttributionProperty(TextProperty):
