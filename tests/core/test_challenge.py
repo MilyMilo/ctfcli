@@ -269,6 +269,25 @@ class TestChallengeSolutions(unittest.TestCase):
                     "data": [{"id": 9, "challenge_id": 1, "state": "hidden", "content": "old"}],
                 }
                 return mock_response
+            if path == "/api/v1/solutions/9":
+                mock_response = MagicMock()
+                mock_response.json.return_value = {
+                    "success": True,
+                    "data": {
+                        "id": 9,
+                        "challenge_id": 1,
+                        "state": "hidden",
+                        "content": "old ![x](/files/stale-location/old.png)",
+                    },
+                }
+                return mock_response
+            if path == "/api/v1/files?type=solution":
+                mock_response = MagicMock()
+                mock_response.json.return_value = {
+                    "success": True,
+                    "data": [{"id": 42, "location": "stale-location/old.png"}],
+                }
+                return mock_response
             return MagicMock()
 
         mock_api: MagicMock = mock_api_constructor.return_value
@@ -277,6 +296,8 @@ class TestChallengeSolutions(unittest.TestCase):
         get_property("solution").upsert(PropertyContext(challenge))
 
         mock_api.post.assert_not_called()
+        # Previously uploaded solution files should be deleted before re-uploading
+        mock_api.delete.assert_called_once_with("/api/v1/files/42")
         mock_api.patch.assert_has_calls(
             [
                 call("/api/v1/solutions/9", json={"state": "solved", "content": ""}),
@@ -284,6 +305,117 @@ class TestChallengeSolutions(unittest.TestCase):
             ],
             any_order=True,
         )
+
+    @mock.patch("ctfcli.core.challenge.API")
+    def test_delete_solution_files_removes_referenced_files(self, mock_api_constructor: MagicMock):
+        challenge = Challenge(self.minimal_challenge)
+        challenge.challenge_id = 1
+
+        def mock_get(*args, **kwargs):
+            if args[0] == "/api/v1/files?type=solution":
+                mock_response = MagicMock()
+                mock_response.json.return_value = {
+                    "success": True,
+                    "data": [
+                        {"id": 1, "location": "loc-a/a.png"},
+                        {"id": 2, "location": "loc-b/b.png"},
+                        {"id": 3, "location": "loc-c/c.png"},
+                    ],
+                }
+                return mock_response
+            return MagicMock()
+
+        mock_api: MagicMock = mock_api_constructor.return_value
+        mock_api.get.side_effect = mock_get
+
+        challenge._delete_solution_files("![a](/files/loc-a/a.png) and ![c](/files/loc-c/c.png)")
+
+        # Only files referenced in the content should be deleted, not the unreferenced one
+        mock_api.delete.assert_has_calls(
+            [call("/api/v1/files/1"), call("/api/v1/files/3")],
+            any_order=True,
+        )
+        self.assertEqual(mock_api.delete.call_count, 2)
+
+    @mock.patch("ctfcli.core.challenge.API")
+    def test_delete_solution_files_deduplicates_repeated_references(self, mock_api_constructor: MagicMock):
+        challenge = Challenge(self.minimal_challenge)
+        challenge.challenge_id = 1
+
+        def mock_get(*args, **kwargs):
+            if args[0] == "/api/v1/files?type=solution":
+                mock_response = MagicMock()
+                mock_response.json.return_value = {
+                    "success": True,
+                    "data": [{"id": 7, "location": "loc-dup/dup.png"}],
+                }
+                return mock_response
+            return MagicMock()
+
+        mock_api: MagicMock = mock_api_constructor.return_value
+        mock_api.get.side_effect = mock_get
+
+        challenge._delete_solution_files("![a](/files/loc-dup/dup.png) and again ![a](/files/loc-dup/dup.png)")
+
+        # A file referenced twice must only be deleted once - a second DELETE would 404
+        mock_api.delete.assert_called_once_with("/api/v1/files/7")
+
+    @mock.patch("ctfcli.core.challenge.API")
+    def test_creates_solution_uploads_repeated_image_only_once(self, mock_api_constructor: MagicMock):
+        challenge = Challenge(
+            self.solution_challenge,
+            {"solution": {"path": "writeup/WRITEUP-DUPLICATE.md", "state": "hidden"}},
+        )
+        challenge.challenge_id = 1
+
+        def mock_get(*args, **kwargs):
+            if args[0] == "/api/v1/solutions":
+                mock_response = MagicMock()
+                mock_response.json.return_value = {"success": True, "data": []}
+                return mock_response
+            return MagicMock()
+
+        def mock_post(*args, **kwargs):
+            path = args[0]
+            if path == "/api/v1/solutions":
+                mock_response = MagicMock()
+                mock_response.json.return_value = {"success": True, "data": {"id": 5}}
+                return mock_response
+            if path == "/api/v1/files":
+                mock_response = MagicMock()
+                mock_response.json.return_value = {
+                    "success": True,
+                    "data": [{"location": "uploaded-location/test.png"}],
+                }
+                return mock_response
+            return MagicMock()
+
+        mock_api: MagicMock = mock_api_constructor.return_value
+        mock_api.get.side_effect = mock_get
+        mock_api.post.side_effect = mock_post
+
+        challenge._create_solution()
+
+        # The image is referenced twice but must only be uploaded once - content.replace
+        # rewrites every occurrence, so a second upload would be orphaned immediately
+        file_uploads = [c for c in mock_api.post.call_args_list if c.args[0] == "/api/v1/files"]
+        self.assertEqual(len(file_uploads), 1)
+
+        # Both references should still be rewritten to the uploaded location
+        patched_content = mock_api.patch.call_args_list[-1].kwargs["json"]["content"]
+        self.assertEqual(patched_content.count("/files/uploaded-location/test.png"), 2)
+        self.assertNotIn("](images/test.png)", patched_content)
+
+    @mock.patch("ctfcli.core.challenge.API")
+    def test_delete_solution_files_noop_without_references(self, mock_api_constructor: MagicMock):
+        challenge = Challenge(self.minimal_challenge)
+        challenge.challenge_id = 1
+
+        mock_api: MagicMock = mock_api_constructor.return_value
+        challenge._delete_solution_files("no files referenced here")
+
+        mock_api.get.assert_not_called()
+        mock_api.delete.assert_not_called()
 
     @mock.patch("ctfcli.core.challenge.API")
     def test_does_not_create_solution_if_not_specified(self, mock_api_constructor: MagicMock):
@@ -2512,6 +2644,158 @@ class TestVerifyMirrorChallenge(unittest.TestCase):
 
         loaded_data = yaml.safe_load(dumped_data)
         self.assertDictEqual(expected_challenge, loaded_data)
+
+    @mock.patch(
+        "ctfcli.core.config.Path.cwd",
+        return_value=BASE_DIR / "fixtures" / "challenges" / "test-challenge-full",
+    )
+    @mock.patch("ctfcli.core.challenge.API")
+    def test_verify_renders_media_placeholders(self, mock_api_constructor: MagicMock, *args, **kwargs):
+        # The remote stores the substituted values, so verify must render the
+        # local [media] placeholders before comparing to avoid a false mismatch.
+        def media_get(*get_args, **get_kwargs):
+            response = self.mock_get(*get_args, **get_kwargs)
+            path = get_args[0]
+
+            if path in ("/api/v1/challenges/3", "/api/v1/challenges/3?view=admin"):
+                response.json.return_value["data"]["description"] = "/files/media/logo.png"
+
+            if path == "/api/v1/challenges/3/hints":
+                response.json.return_value["data"][0]["content"] = "/files/media/handout.zip"
+
+            return response
+
+        mock_api: MagicMock = mock_api_constructor.return_value
+        mock_api.get.side_effect = media_get
+
+        challenge = Challenge(
+            self.full_challenge,
+            {
+                "description": "{logo}",
+                "hints": ["{handout}", {"content": "paid hint", "cost": 100}],
+            },
+        )
+        challenge.challenge_id = 3
+
+        self.assertTrue(challenge.verify(ignore=["files"]))
+
+
+class TestMediaPlaceholders(unittest.TestCase):
+    minimal_challenge = BASE_DIR / "fixtures" / "challenges" / "test-challenge-minimal" / "challenge.yml"
+    minimal_challenge_cwd = BASE_DIR / "fixtures" / "challenges" / "test-challenge-minimal"
+
+    installed_challenges = [{"id": 1, "name": "Test Challenge"}]
+
+    @mock.patch("ctfcli.core.config.Path.cwd", return_value=minimal_challenge_cwd)
+    @mock.patch("ctfcli.core.challenge.API")
+    def test_create_substitutes_media_in_description(self, mock_api_constructor: MagicMock, *args, **kwargs):
+        challenge = Challenge(self.minimal_challenge, {"description": "See {logo}", "state": "hidden"})
+
+        mock_api: MagicMock = mock_api_constructor.return_value
+        mock_api.post.return_value.json.return_value = {"success": True, "data": {"id": 1}}
+
+        challenge.create()
+
+        create_call = mock_api.post.call_args_list[0]
+        self.assertEqual(create_call.args[0], "/api/v1/challenges")
+        self.assertEqual(create_call.kwargs["json"]["description"], "See /files/media/logo.png")
+
+    @mock.patch("ctfcli.core.config.Path.cwd", return_value=minimal_challenge_cwd)
+    @mock.patch(
+        "ctfcli.core.challenge.Challenge.load_installed_challenge",
+        return_value={"id": 1, "name": "Test Challenge", "state": "hidden", "files": []},
+    )
+    @mock.patch("ctfcli.core.challenge.Challenge.load_installed_challenges", return_value=installed_challenges)
+    @mock.patch("ctfcli.core.challenge.API")
+    def test_sync_substitutes_media_in_description(self, mock_api_constructor: MagicMock, *args, **kwargs):
+        challenge = Challenge(self.minimal_challenge, {"description": "See {logo}", "state": "hidden"})
+
+        mock_api: MagicMock = mock_api_constructor.return_value
+        mock_api.get.return_value.json.return_value = {"success": True, "data": []}
+
+        challenge.sync(ignore=["files"])
+
+        mock_api.patch.assert_any_call(
+            "/api/v1/challenges/1",
+            json={
+                "name": "Test Challenge",
+                "category": "New Test",
+                "description": "See /files/media/logo.png",
+                "attribution": "New Test Attribution",
+                "type": "standard",
+                "value": 150,
+                "state": "hidden",
+                "max_attempts": 0,
+                "connection_info": None,
+                "scheduled_at": None,
+            },
+        )
+
+    @mock.patch("ctfcli.core.config.Path.cwd", return_value=minimal_challenge_cwd)
+    @mock.patch("ctfcli.core.challenge.API")
+    def test_create_hints_substitutes_media(self, mock_api_constructor: MagicMock, *args, **kwargs):
+        challenge = Challenge(
+            self.minimal_challenge,
+            {
+                "hints": [
+                    "download {handout}",
+                    {"content": "logo {logo}", "cost": 50},
+                    {"key": "h1", "content": "base {logo}"},
+                    {"key": "h2", "content": "deeper {handout}", "requirements": ["h1"]},
+                ]
+            },
+        )
+        challenge.challenge_id = 1
+
+        mock_api: MagicMock = mock_api_constructor.return_value
+        post_responses = []
+        for hint_id in range(10, 14):
+            response = MagicMock()
+            response.json.return_value = {"success": True, "data": {"id": hint_id}}
+            post_responses.append(response)
+        mock_api.post.side_effect = post_responses
+
+        challenge._create_hints()
+
+        # plain-string hint content is substituted
+        mock_api.post.assert_any_call(
+            "/api/v1/hints",
+            json={
+                "content": "download /files/media/handout.zip",
+                "title": "",
+                "cost": 0,
+                "challenge_id": 1,
+            },
+        )
+        # dict hint content is substituted
+        mock_api.post.assert_any_call(
+            "/api/v1/hints",
+            json={"content": "logo /files/media/logo.png", "title": "", "cost": 50, "challenge_id": 1},
+        )
+        # requirement-gated hint is posted blank, then its real (substituted) content is patched in
+        mock_api.post.assert_any_call(
+            "/api/v1/hints",
+            json={"content": "", "title": "", "cost": 0, "challenge_id": 1},
+        )
+        mock_api.patch.assert_any_call(
+            "/api/v1/hints/13",
+            json={"content": "deeper /files/media/handout.zip"},
+        )
+
+    @mock.patch("ctfcli.core.config.Path.cwd", return_value=Path("/"))
+    @mock.patch("ctfcli.core.challenge.API")
+    def test_no_substitution_without_project(self, mock_api_constructor: MagicMock, *args, **kwargs):
+        # Outside of a project (no .ctf/config), substitution is a defensive no-op
+        # and the raw token is sent unchanged.
+        challenge = Challenge(self.minimal_challenge, {"description": "See {logo}", "state": "hidden"})
+
+        mock_api: MagicMock = mock_api_constructor.return_value
+        mock_api.post.return_value.json.return_value = {"success": True, "data": {"id": 1}}
+
+        challenge.create()
+
+        create_call = mock_api.post.call_args_list[0]
+        self.assertEqual(create_call.kwargs["json"]["description"], "See {logo}")
 
 
 class TestSaveChallenge(unittest.TestCase):
